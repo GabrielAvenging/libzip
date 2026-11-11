@@ -35,8 +35,7 @@
 
 #include "zip.h"
 
-static int
-test_unknown_length_window(void) {
+static int test_unknown_length_window(void) {
     zip_error_t error;
     zip_source_t *base, *window;
     char data[] = "0123456789";
@@ -114,8 +113,7 @@ test_unknown_length_window(void) {
 }
 
 
-static int
-test_large_fragment_source(void) {
+static int test_large_fragment_source(void) {
     zip_error_t error;
     zip_source_t *source;
     zip_buffer_fragment_t fragments[2];
@@ -149,6 +147,11 @@ test_large_fragment_source(void) {
         zip_source_free(source);
         return -1;
     }
+    if (zip_source_seek(source, 1, SEEK_CUR) == 0 || zip_source_tell(source) != ZIP_INT64_MAX) {
+        fprintf(stderr, "fragment source allowed seek past ZIP_INT64_MAX\n");
+        zip_source_free(source);
+        return -1;
+    }
     if (zip_source_seek(source, -1, SEEK_END) == 0) {
         fprintf(stderr, "fragment source allowed unrepresentable offset\n");
         zip_source_free(source);
@@ -160,8 +163,88 @@ test_large_fragment_source(void) {
 }
 
 
-int
-main(int argc, char *argv[]) {
+static int expect_compute(zip_uint64_t offset, zip_uint64_t length, zip_int64_t delta, int whence, int expect_error, zip_int64_t expected) {
+    zip_error_t error;
+    zip_source_args_seek_t args;
+    zip_int64_t got;
+
+    args.offset = delta;
+    args.whence = whence;
+    zip_error_init(&error);
+    got = zip_source_seek_compute_offset(offset, length, &args, sizeof(args), &error);
+    if (expect_error) {
+        if (got != -1 || zip_error_code_zip(&error) != ZIP_ER_INVAL) {
+            fprintf(stderr, "expected rejection for offset %llu length %llu delta %lld whence %d, got %lld (%s)\n", (unsigned long long)offset, (unsigned long long)length, (long long)delta, whence, (long long)got, zip_error_strerror(&error));
+            zip_error_fini(&error);
+            return -1;
+        }
+    }
+    else if (got != expected || zip_error_code_zip(&error) != ZIP_ER_OK) {
+        fprintf(stderr, "expected %lld for offset %llu length %llu delta %lld whence %d, got %lld (%s)\n", (long long)expected, (unsigned long long)offset, (unsigned long long)length, (long long)delta, whence, (long long)got, zip_error_strerror(&error));
+        zip_error_fini(&error);
+        return -1;
+    }
+    zip_error_fini(&error);
+    return 0;
+}
+
+
+static int test_offset_overflow(void) {
+    /* In-range relative seeks. */
+    if (expect_compute(10, 100, 5, SEEK_CUR, 0, 15) < 0) {
+        return -1;
+    }
+    if (expect_compute(10, 100, -4, SEEK_CUR, 0, 6) < 0) {
+        return -1;
+    }
+    if (expect_compute(0, 50, -10, SEEK_END, 0, 40) < 0) {
+        return -1;
+    }
+    if (expect_compute(99, 50, 10, SEEK_SET, 0, 10) < 0) {
+        return -1;
+    }
+
+    /* ZIP_INT64_MAX itself is representable; one past it is not, even when the length is larger. */
+    if (expect_compute((zip_uint64_t)ZIP_INT64_MAX - 5, ZIP_UINT64_MAX, 5, SEEK_CUR, 0, ZIP_INT64_MAX) < 0) {
+        return -1;
+    }
+    if (expect_compute((zip_uint64_t)ZIP_INT64_MAX - 5, ZIP_UINT64_MAX, 6, SEEK_CUR, 1, 0) < 0) {
+        return -1;
+    }
+    if (expect_compute(0, (zip_uint64_t)ZIP_INT64_MAX + 10, -10, SEEK_END, 0, ZIP_INT64_MAX) < 0) {
+        return -1;
+    }
+    if (expect_compute(0, (zip_uint64_t)ZIP_INT64_MAX + 10, 0, SEEK_END, 1, 0) < 0) {
+        return -1;
+    }
+
+    /* Unsigned wrap must not come back as a small successful offset. */
+    if (expect_compute(ZIP_UINT64_MAX - 5, ZIP_UINT64_MAX, 10, SEEK_CUR, 1, 0) < 0) {
+        return -1;
+    }
+
+    /* Underflow must not come back as a wrapped positive position. */
+    if (expect_compute(0, ZIP_UINT64_MAX, -2, SEEK_CUR, 1, 0) < 0) {
+        return -1;
+    }
+    if (expect_compute(0, ZIP_UINT64_MAX, ZIP_INT64_MIN, SEEK_CUR, 1, 0) < 0) {
+        return -1;
+    }
+    if (expect_compute(3, 20, -4, SEEK_CUR, 1, 0) < 0) {
+        return -1;
+    }
+    if (expect_compute(10, 20, 15, SEEK_CUR, 1, 0) < 0) {
+        return -1;
+    }
+    if (expect_compute(0, 20, -1, SEEK_SET, 1, 0) < 0) {
+        return -1;
+    }
+
+    return 0;
+}
+
+
+int main(int argc, char *argv[]) {
     if (argc > 2) {
         fprintf(stderr, "usage: %s [ignored]\n", argv[0]);
         return 1;
@@ -171,6 +254,9 @@ main(int argc, char *argv[]) {
         return 1;
     }
     if (test_large_fragment_source() < 0) {
+        return 1;
+    }
+    if (test_offset_overflow() < 0) {
         return 1;
     }
 
