@@ -99,21 +99,26 @@ zip_int64_t zip_source_seek_compute_offset(zip_uint64_t offset, zip_uint64_t len
 }
 
 static zip_uint64_t _zip_offset_add(zip_uint64_t offset, zip_int64_t delta) {
-    if (delta >= 0) {
-        zip_uint64_t unsigned_delta = (zip_uint64_t)delta;
+    zip_uint64_t unsigned_delta;
+    zip_uint64_t result;
 
-        if (offset > ZIP_INT64_MAX - unsigned_delta) {
+    if (delta >= 0) {
+        unsigned_delta = (zip_uint64_t)delta;
+        if (ckd_add_unsigned(&result, offset, unsigned_delta) || result > ZIP_INT64_MAX) {
             return ZIP_UINT64_MAX;
         }
-        return offset + unsigned_delta;
+        return result;
+    }
+
+    /* Handle ZIP_INT64_MIN without overflowing signed arithmetic. */
+    if (delta == ZIP_INT64_MIN) {
+        unsigned_delta = (zip_uint64_t)ZIP_INT64_MAX + 1;
     }
     else {
-        /* Handle ZIP_INT64_MIN without overflowing signed arithmetic. */
-        zip_uint64_t unsigned_delta = (zip_uint64_t)(-(delta + 1)) + 1;
-
-        if (offset < unsigned_delta) {
-            return ZIP_UINT64_MAX;
-        }
-        return offset - unsigned_delta;
+        unsigned_delta = (zip_uint64_t)(-delta);
     }
+    if (ckd_sub_unsigned(&result, offset, unsigned_delta)) {
+        return ZIP_UINT64_MAX;
+    }
+    return result;
 }
